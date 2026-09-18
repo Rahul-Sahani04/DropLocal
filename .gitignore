@@ -25,4 +25,7 @@ captures/
 # Secrets
 *.jks
 *.keystore
+# Release signing credentials (never commit)
+keystore.properties
+app/keystore.properties
 google-services.json
