@@ -67,7 +67,7 @@ fun NavGraph(app: DropLocalApp, vm: MainViewModel = viewModel()) {
                 vm.acceptIncoming(info)
                 nav.navigate("transfer")
             },
-            onReject = { app.nearby.dismissIncoming() },
+            onReject = { app.nearby.rejectFile(info) },
         )
     }
     incomingText?.let { info ->
@@ -175,13 +175,13 @@ fun NavGraph(app: DropLocalApp, vm: MainViewModel = viewModel()) {
                 },
                 onRetry = {
                     active?.let {
-                        app.transfers.retry(it.id)
-                        // Best-effort re-send for text; files need re-pick in MVP
-                        Toast.makeText(context, "Re-queued — resend from picker if file", Toast.LENGTH_SHORT).show()
+                        if (!app.nearby.retryTransfer(it.id)) {
+                            Toast.makeText(context, "Reconnect and choose the file again to retry", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 },
                 onCancel = {
-                    active?.let { app.transfers.cancel(it.id) }
+                    active?.let { app.nearby.cancelTransfer(it.id) }
                     app.nearby.disconnect()
                     nav.popBackStack()
                 },

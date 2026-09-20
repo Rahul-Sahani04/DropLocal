@@ -77,7 +77,17 @@ class NearbyManager(
     // Nearby payloadId -> our transfer session id
     private val payloadToTransfer = mutableMapOf<Long, String>()
     private val metaByTransfer = mutableMapOf<String, JSONObject>()
+    // Metadata and file payloads are sent in the same order for this single-peer MVP.
+    // Keep that association explicit rather than guessing from queue status.
+    private val awaitingIncomingFiles = mutableListOf<String>()
+    private val receivedFiles = mutableMapOf<String, File>()
+    private val receivedInfos = mutableMapOf<String, IncomingFile>()
+    private val acceptedReceivedTransfers = mutableSetOf<String>()
+    private val completedReceivedTransfers = mutableSetOf<String>()
+    private val outgoingFiles = mutableMapOf<String, OutgoingFile>()
     var onFileReady: ((File, IncomingFile) -> Unit)? = null
+
+    private data class OutgoingFile(val meta: JSONObject, val file: File)
 
     private val lifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
@@ -158,41 +168,27 @@ class NearbyManager(
                                     peer = sender,
                                 )
                                 transfers.enqueue(s)
-                                // Wait for receiver accept before mapping payload (MVP: modal gates accept)
+                                awaitingIncomingFiles += tid
                             }
                         }
                     } catch (_: Exception) { }
                 }
                 Payload.Type.FILE -> {
                     val file = payload.asFile()?.asJavaFile() ?: return
-                    // Find transfer waiting for a file payload (first RUNNING/QUEUED received)
-                    val waiting = transfers.queue.items.value.firstOrNull {
-                        it.direction == TransferDirection.RECEIVED &&
-                            (it.status == TransferStatus.QUEUED || it.status == TransferStatus.RUNNING)
-                    }
+                    val transferId = awaitingIncomingFiles.firstOrNull() ?: return
+                    awaitingIncomingFiles.removeAt(0)
+                    val waiting = transfers.queue.items.value.firstOrNull { it.id == transferId }
                     if (waiting != null) {
                         payloadToTransfer[payload.id] = waiting.id
-                        transfers.queue.update(waiting.id) {
-                            it.copy(status = TransferStatus.RUNNING)
-                        }
-                        // If receiver already accepted (status RUNNING via acceptFile), deliver
-                        val accepted = metaByTransfer.remove(waiting.id)
-                        scope.launch {
-                            onFileReady?.invoke(
-                                file,
-                                IncomingFile(
-                                    waiting.id, waiting.name, waiting.size,
-                                    waiting.mime, waiting.peer, payload.id,
-                                ),
-                            )
-                        }
-                        if (accepted == null) {
-                            // Hold: show modal; actual save happens on accept via acceptFile()
-                            _incomingFile.value = IncomingFile(
-                                waiting.id, waiting.name, waiting.size,
-                                waiting.mime, waiting.peer, payload.id,
-                            )
-                        }
+                        receivedFiles[waiting.id] = file
+                        val incoming = IncomingFile(
+                            waiting.id, waiting.name, waiting.size,
+                            waiting.mime, waiting.peer, payload.id,
+                        )
+                        receivedInfos[waiting.id] = incoming
+                        // Nearby starts receiving immediately after the connection is accepted,
+                        // but never write into Downloads until the user accepts this file.
+                        _incomingFile.value = incoming
                     }
                 }
                 else -> Unit
@@ -211,6 +207,9 @@ class NearbyManager(
                     if (cur != null && cur.direction == TransferDirection.SENT) {
                         transfers.progress(tid, cur.size)
                         transfers.complete(tid)
+                    } else if (cur != null && cur.direction == TransferDirection.RECEIVED) {
+                        completedReceivedTransfers += tid
+                        completeIncomingIfReady(tid)
                     }
                 }
                 PayloadTransferUpdate.Status.FAILURE,
@@ -286,33 +285,76 @@ class NearbyManager(
         val ep = connectedEndpoint ?: run {
             transfers.fail(transferId, "Not connected"); return
         }
+        outgoingFiles[transferId] = OutgoingFile(meta, file)
         client.sendPayload(ep, Payload.fromBytes(meta.toString().toByteArray(Charsets.UTF_8)))
         val fp = Payload.fromFile(file)
-        // Map when transfer update arrives: Nearby assigns payload id internally;
-        // correlate by tracking the most recent file payload per transfer via progress.
-        // We map lazily: store transfer id keyed by file length+name hash is fragile,
-        // so instead send then associate on first IN_PROGRESS by matching SENT+RUNNING.
+        // Payload IDs are assigned before sending, so map directly rather than trying
+        // to infer the session from an unrelated progress event.
+        payloadToTransfer[fp.id] = transferId
         client.sendPayload(ep, fp).addOnFailureListener {
+            payloadToTransfer.remove(fp.id)
             transfers.fail(transferId, it.message ?: "send failed")
         }
-        // Mark running; progress updates arrive via payloadCallback once ids correlate.
-        // Correlate: remember pending sent transfer so IN_PROGRESS without mapping binds to it.
-        pendingSentTransfer = transferId
-    }
-
-    private var pendingSentTransfer: String? = null
-
-    /** Called from payloadCallback path for sender progress when id unknown. */
-    fun bindSenderProgress(payloadId: Long, bytes: Long, total: Long) {
-        val tid = payloadToTransfer[payloadId] ?: pendingSentTransfer ?: return
-        payloadToTransfer[payloadId] = tid
-        transfers.progress(tid, bytes)
     }
 
     fun acceptFile(info: IncomingFile) {
-        // Receiver accepted modal: mark running; file bytes already arriving/saved via onFileReady
+        if (!receivedFiles.containsKey(info.transferId)) return
+        acceptedReceivedTransfers += info.transferId
         transfers.queue.update(info.transferId) { it.copy(status = TransferStatus.RUNNING) }
         _incomingFile.value = null
+        completeIncomingIfReady(info.transferId)
+    }
+
+    fun rejectFile(info: IncomingFile) {
+        client.cancelPayload(info.payloadId)
+        payloadToTransfer.remove(info.payloadId)
+        receivedFiles.remove(info.transferId)
+        receivedInfos.remove(info.transferId)
+        awaitingIncomingFiles.remove(info.transferId)
+        acceptedReceivedTransfers.remove(info.transferId)
+        completedReceivedTransfers.remove(info.transferId)
+        metaByTransfer.remove(info.transferId)
+        transfers.cancel(info.transferId)
+        _incomingFile.value = null
+    }
+
+    /** Cancel the Nearby payload as well as its local transfer state. */
+    fun cancelTransfer(transferId: String) {
+        payloadToTransfer.entries
+            .filter { it.value == transferId }
+            .map { it.key }
+            .forEach { payloadId ->
+                client.cancelPayload(payloadId)
+                payloadToTransfer.remove(payloadId)
+            }
+        receivedFiles.remove(transferId)
+        receivedInfos.remove(transferId)
+        awaitingIncomingFiles.remove(transferId)
+        acceptedReceivedTransfers.remove(transferId)
+        completedReceivedTransfers.remove(transferId)
+        metaByTransfer.remove(transferId)
+        transfers.cancel(transferId)
+    }
+
+    /** Retry sent files from their cached source while the peer remains connected. */
+    fun retryTransfer(transferId: String): Boolean {
+        val outgoing = outgoingFiles[transferId] ?: return false
+        if (connectedEndpoint == null) return false
+        transfers.retry(transferId)
+        sendFile(transferId, outgoing.meta, outgoing.file)
+        return true
+    }
+
+    /** A file becomes visible only after both Nearby completion and user acceptance. */
+    private fun completeIncomingIfReady(transferId: String) {
+        if (transferId !in acceptedReceivedTransfers || transferId !in completedReceivedTransfers) return
+        val file = receivedFiles.remove(transferId) ?: return
+        val info = receivedInfos.remove(transferId) ?: return
+        acceptedReceivedTransfers.remove(transferId)
+        completedReceivedTransfers.remove(transferId)
+        awaitingIncomingFiles.remove(transferId)
+        metaByTransfer.remove(transferId)
+        scope.launch { onFileReady?.invoke(file, info) }
     }
 
     fun dismissIncoming() {
