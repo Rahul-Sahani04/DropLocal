@@ -1,83 +1,96 @@
 package com.droplocal.app.ui.transfer
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.droplocal.app.transfer.TransferSession
-import java.util.Locale
-
-fun fmtMB(b: Long): String = String.format(Locale.US, "%.1f MB", b / 1_048_576.0)
-fun fmtSpeed(bps: Double): String = String.format(Locale.US, "%.1f MB/s", bps / 1_048_576.0)
+import com.droplocal.app.transfer.*
+import com.droplocal.app.ui.components.*
+import java.text.NumberFormat
 
 @Composable
 fun TransferScreen(
-    session: TransferSession?,
+    sessions: List<TransferSession>,
     peer: String,
     onDone: () -> Unit,
-    onRetry: () -> Unit,
-    onCancel: () -> Unit,
+    onRetry: (String) -> Unit,
+    onCancelAll: () -> Unit,
+    canRetry: (TransferSession) -> Boolean = { false },
+    onOpen: ((TransferSession) -> Unit)? = null,
+    onShare: ((TransferSession) -> Unit)? = null,
+    error: String? = null,
 ) {
-    Column(
-        Modifier.fillMaxSize().padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        if (session == null) {
-            Text("No active transfer")
-            OutlinedButton(onClick = onDone) { Text("Back") }
-            return
+    var confirmCancel by remember { mutableStateOf(false) }
+    val ordered = orderedSessions(sessions)
+    val expectedCount = maxOf(ordered.size, ordered.maxOfOrNull { it.batchCount } ?: 0)
+    val active = ordered.any(::isActive)
+    ScreenColumn {
+        ScreenHeading(if (expectedCount > 1) "Transfer batch" else "Transfer")
+        if (peer.isNotBlank()) Text(peer, style = MaterialTheme.typography.titleLarge)
+        if (error != null) StatusText(error, error = true)
+        if (ordered.isEmpty()) Text("No transfers in this batch.")
+        else {
+            val completed = ordered.count { it.status == TransferStatus.DONE }
+            val failed = ordered.count { it.status == TransferStatus.FAILED }
+            val cancelled = ordered.count { it.status == TransferStatus.CANCELLED }
+            StatusText("$completed of $expectedCount delivered · $failed failed · $cancelled cancelled")
+            val incompleteOffers = ordered.size < expectedCount
+            val declaredTotal = ordered.firstOrNull()?.batchSize ?: -1L
+            Text("Batch size: ${formatBytes(if (incompleteOffers) declaredTotal else batchSize(ordered))}")
+            val aggregate = if (incompleteOffers) null else aggregateProgress(ordered)
+            if (active || aggregate != null) TransferProgress(aggregate)
+            else Text("Batch progress unavailable")
+            if (!active && incompleteOffers) StatusText("These files are finished. Remaining files need a separate offer and your approval.")
+            else if (!active && completed == ordered.size) StatusText("All transfers complete")
+            else if (!active) StatusText("Batch finished with incomplete transfers", error = failed > 0)
+            ordered.forEach { session ->
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(session.name, style = MaterialTheme.typography.titleMedium)
+                        Text(if (session.direction == TransferDirection.SENT) "To ${session.peer.ifBlank { peer }}" else "From ${session.peer.ifBlank { peer }}")
+                        StatusText(statusLabel(session), error = session.status == TransferStatus.FAILED)
+                        if (session.error != null) StatusText(session.error, error = true)
+                        TransferProgress(displayProgress(session))
+                        val verb = if (session.direction == TransferDirection.SENT) "Sent" else "Received"
+                        Text("$verb ${formatBytes(session.bytes.coerceAtLeast(0))} / ${formatBytes(session.size)}")
+                        if (session.status == TransferStatus.RUNNING) {
+                            Text("Session average: ${fmtSpeed(session.speedBps)}", style = MaterialTheme.typography.bodySmall)
+                            if (session.size > 0 && session.bytes < session.size && session.speedBps.isFinite() && session.speedBps > 0) {
+                                Text("Approx. ${formatSeconds((session.size - session.bytes) / session.speedBps)} remaining", style = MaterialTheme.typography.bodySmall)
+                            }
+                        } else if (session.status == TransferStatus.DONE) {
+                            Text("Session time: ${formatSeconds(session.elapsedSec)}", style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (hasUsableOutput(session)) {
+                            if (onOpen != null) OutlinedButton(onClick = { onOpen(session) }, modifier = ActionModifier) { Text("Open") }
+                            if (onShare != null) OutlinedButton(onClick = { onShare(session) }, modifier = ActionModifier) { Text("Share") }
+                        }
+                        if (session.direction == TransferDirection.SENT && !session.isText &&
+                            session.status == TransferStatus.FAILED && canRetry(session)) {
+                            Button(onClick = { onRetry(session.id) }, modifier = ActionModifier) { Text("Retry file") }
+                        }
+                    }
+                }
+            }
         }
-        Text(if (session.direction.name == "SENT") "SENDING TO" else "RECEIVING FROM")
-        Text(peer, style = MaterialTheme.typography.headlineSmall)
-        Spacer(Modifier.height(8.dp))
-        Text(session.name, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(12.dp))
-        LinearProgressIndicator(
-            progress = session.progress,
-            modifier = Modifier.fillMaxWidth().height(10.dp),
-        )
-        Spacer(Modifier.height(8.dp))
-        Text("${(session.progress * 100).toInt()}%")
-        Text("${fmtMB(session.bytes)} / ${fmtMB(session.size)}")
-        Text(fmtSpeed(session.speedBps))
-        val eta = if (session.speedBps > 0)
-            "%.1f sec remaining".format((session.size - session.bytes) / session.speedBps)
-        else "…"
-        Text(eta)
-        Spacer(Modifier.height(8.dp))
-        Text("Saving to Downloads", style = MaterialTheme.typography.bodySmall)
-        Spacer(Modifier.height(16.dp))
-        when (session.status.name) {
-            "DONE" -> {
-                Text("✓ TRANSFER COMPLETE", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("%.1fs TRANSFER TIME".format(session.elapsedSec))
-                Text("Local transfer · No cloud upload")
-                Spacer(Modifier.height(12.dp))
-                Button(onClick = onDone) { Text("SEND ANOTHER / HOME") }
-            }
-            "FAILED" -> {
-                Text("TRANSFER INTERRUPTED: ${session.error ?: ""}")
-                Button(onClick = onRetry) { Text("RETRY") }
-                OutlinedButton(onClick = onCancel) { Text("CANCEL") }
-            }
-            else -> {
-                OutlinedButton(onClick = onCancel) { Text("CANCEL") }
-            }
-        }
+        if (active) OutlinedButton(onClick = { confirmCancel = true }, modifier = ActionModifier) { Text("Cancel all transfers") }
+        else Button(onClick = onDone, modifier = ActionModifier) { Text("Home") }
+    }
+    if (confirmCancel) AlertDialog(
+        onDismissRequest = { confirmCancel = false },
+        title = { Text("Cancel this batch?") },
+        text = { Text("Stop all queued and active transfers. Completed files are kept.") },
+        confirmButton = { TextButton(onClick = { confirmCancel = false; onCancelAll() }) { Text("Cancel all") } },
+        dismissButton = { TextButton(onClick = { confirmCancel = false }) { Text("Keep transferring") } },
+    )
+}
+
+@Composable
+private fun TransferProgress(progress: Float?) {
+    if (progress == null) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    else {
+        LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth())
+        Text(NumberFormat.getPercentInstance().format(progress), style = MaterialTheme.typography.bodySmall)
     }
 }

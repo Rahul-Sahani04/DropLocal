@@ -1,25 +1,12 @@
 package com.droplocal.app.ui.discovery
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.droplocal.app.nearby.NearbyEndpoint
-import com.droplocal.app.ui.theme.Surface
+import com.droplocal.app.ui.components.*
 
 @Composable
 fun DiscoveryScreen(
@@ -28,34 +15,29 @@ fun DiscoveryScreen(
     onSelect: (NearbyEndpoint) -> Unit,
     onRescan: () -> Unit,
     onBack: () -> Unit,
+    title: String = "Send files",
+    selectedSummary: String = "",
+    error: String? = null,
+    onScanQr: (() -> Unit)? = null,
 ) {
-    Column(Modifier.fillMaxSize().padding(20.dp)) {
-        Text("SEND FILE", style = MaterialTheme.typography.labelLarge)
-        Text("Nearby Devices", style = MaterialTheme.typography.headlineMedium)
-        Spacer(Modifier.height(12.dp))
-        if (endpoints.isEmpty()) {
-            Text("No nearby devices yet.\nMake sure both phones have DropLocal open.")
-        }
-        LazyColumn(Modifier.weight(1f)) {
-            items(endpoints, key = { it.id }) { ep ->
-                Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)
-                        .clickable { onSelect(ep) },
-                    colors = CardDefaults.cardColors(containerColor = Surface),
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("◉  ${ep.name}", style = MaterialTheme.typography.titleMedium)
-                        Text("Android · Ready", color = MaterialTheme.colorScheme.secondary)
-                    }
+    ScreenColumn {
+        ScreenHeading(title)
+        if (selectedSummary.isNotBlank()) Text(selectedSummary)
+        Text("Choose a nearby device", style = MaterialTheme.typography.titleLarge)
+        if (error != null) StatusText(error, error = true)
+        if (scanning) StatusText("Scanning for nearby devices…")
+        if (endpoints.isEmpty()) Text("No devices found yet. Both phones need this updated DropLocal version. On the other phone, open Receive and make it visible. Keep Wi-Fi and Bluetooth on.")
+        endpoints.distinctBy { it.id }.forEach { endpoint ->
+            OutlinedButton(onClick = { onSelect(endpoint) }, modifier = ActionModifier) {
+                Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    Text(endpoint.name.ifBlank { "Android device" }, style = MaterialTheme.typography.titleMedium)
+                    Text("Tap to compare connection codes", style = MaterialTheme.typography.bodySmall)
                 }
             }
         }
-        if (scanning) {
-            CircularProgressIndicator()
-            Text("Scanning...")
-        } else {
-            TextButton(onClick = onRescan) { Text("SCAN AGAIN") }
-        }
-        TextButton(onClick = onBack) { Text("Back") }
+        OutlinedButton(onClick = onRescan, modifier = ActionModifier,
+            enabled = !scanning || error != null) { Text(if (error != null) "Retry discovery" else "Scan again") }
+        if (onScanQr != null) OutlinedButton(onClick = onScanQr, modifier = ActionModifier) { Text("Scan receiver QR") }
+        TextButton(onClick = onBack, modifier = ActionModifier) { Text("Back") }
     }
 }

@@ -1,64 +1,59 @@
 package com.droplocal.app.ui.history
 
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.runtime.Composable
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import com.droplocal.app.transfer.TransferSession
-import com.droplocal.app.ui.theme.Surface
-import java.text.SimpleDateFormat
+import com.droplocal.app.transfer.*
+import com.droplocal.app.ui.components.*
+import com.droplocal.app.ui.transfer.*
+import java.text.DateFormat
 import java.util.Date
-import java.util.Locale
 
 @Composable
 fun HistoryScreen(
     items: List<TransferSession>,
     onClear: () -> Unit,
     onBack: () -> Unit,
+    error: String? = null,
+    onOpen: ((TransferSession) -> Unit)? = null,
+    onShare: ((TransferSession) -> Unit)? = null,
 ) {
-    val fmt = SimpleDateFormat("dd MMM yyyy · HH:mm", Locale.US)
-    Column(Modifier.fillMaxSize().padding(20.dp)) {
-        Text("History", style = MaterialTheme.typography.headlineMedium)
-        Text("Last 10 local transfers")
-        Spacer(Modifier.height(12.dp))
-        LazyColumn(Modifier.weight(1f)) {
-            items(items, key = { it.id }) { s ->
-                Card(
-                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    colors = CardDefaults.cardColors(containerColor = Surface),
-                ) {
-                    Column(Modifier.padding(12.dp)) {
-                        Text("${if (s.status.name == "DONE") "✓" else "•"} ${s.name}")
-                        Text(
-                            "${s.direction.name.lowercase().replaceFirstChar { it.uppercase() }} " +
-                                "${if (s.peer.isNotEmpty()) "· ${s.peer}" else ""}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Text(
-                            "%.1f MB · %.1fs · %s".format(
-                                s.size / 1_048_576.0, s.elapsedSec,
-                                fmt.format(Date(s.startedAt)),
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
+    var confirmClear by remember { mutableStateOf(false) }
+    val unique = items.distinctBy { it.id }.take(10)
+    val dateFormat = DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT)
+    ScreenColumn {
+        ScreenHeading("History")
+        Text("Last 10 local transfers · Message contents are not stored")
+        if (error != null) StatusText(error, error = true)
+        if (unique.isEmpty()) Text("No transfers yet. Send or receive a file or message to see its result here.")
+        unique.forEach { session ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(session.name, style = MaterialTheme.typography.titleMedium)
+                    Text(if (session.direction == TransferDirection.SENT) "Sent to ${session.peer.ifBlank { "Nearby device" }}" else "Received from ${session.peer.ifBlank { "Nearby device" }}")
+                    StatusText(statusLabel(session), error = session.status == TransferStatus.FAILED)
+                    if (session.error != null) StatusText(session.error, error = true)
+                    Text("${formatBytes(session.size)} · ${formatSeconds(session.elapsedSec)}", style = MaterialTheme.typography.bodySmall)
+                    Text(dateFormat.format(Date(session.startedAt)), style = MaterialTheme.typography.bodySmall)
+                    if (hasUsableOutput(session)) {
+                        if (onOpen != null) OutlinedButton(onClick = { onOpen(session) }, modifier = ActionModifier) { Text("Open") }
+                        if (onShare != null) OutlinedButton(onClick = { onShare(session) }, modifier = ActionModifier) { Text("Share") }
+                    } else if (session.direction == TransferDirection.RECEIVED && session.status == TransferStatus.DONE && !session.isText) {
+                        Text("Saved-file link unavailable", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
         }
-        TextButton(onClick = onClear) { Text("Clear history") }
-        TextButton(onClick = onBack) { Text("Back") }
-        Spacer(Modifier.height(4.dp))
+        TextButton(onClick = { confirmClear = true }, enabled = unique.isNotEmpty(), modifier = ActionModifier) { Text("Clear history") }
+        TextButton(onClick = onBack, modifier = ActionModifier) { Text("Back") }
     }
+    if (confirmClear) AlertDialog(
+        onDismissRequest = { confirmClear = false },
+        title = { Text("Clear history?") },
+        text = { Text("Remove transfer records from this phone. Saved files are not deleted.") },
+        confirmButton = { TextButton(onClick = { confirmClear = false; onClear() }) { Text("Clear") } },
+        dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Keep history") } },
+    )
 }

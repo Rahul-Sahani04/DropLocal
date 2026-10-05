@@ -23,8 +23,8 @@ android {
         applicationId = "com.droplocal.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0-mvp"
+        versionCode = 2
+        versionName = "1.1.0-mvp"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -88,4 +88,10 @@ dependencies {
     implementation(libs.compose.material.icons)
 
     testImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
+    testImplementation(libs.org.json)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -2,8 +2,12 @@ package com.droplocal.app.ui.components
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -13,40 +17,53 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.droplocal.app.nearby.IncomingFile
 import com.droplocal.app.nearby.IncomingText
+import com.droplocal.app.ui.transfer.formatBytes
 
 @Composable
 fun IncomingFileDialog(info: IncomingFile, onAccept: () -> Unit, onReject: () -> Unit) {
     AlertDialog(
         onDismissRequest = onReject,
-        title = { Text("INCOMING TRANSFER") },
+        title = { ScreenHeading("Incoming file offer") },
         text = {
-            Column {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("${info.sender} wants to send")
                 Text(info.name, style = MaterialTheme.typography.titleMedium)
-                Text("%.1f MB".format(info.size / 1_048_576.0))
-                Text(info.mime, style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.padding(2.dp))
-                Text("Authenticated session · accept to receive", style = MaterialTheme.typography.bodySmall)
+                Text("Size: ${formatBytes(info.size)}")
+                if (info.batchCount > 1) Text("File ${info.batchIndex} of ${info.batchCount} · Batch: ${formatBytes(info.batchSize)}")
+                Text("Type: ${info.mime}", style = MaterialTheme.typography.bodySmall)
+                Text("No file bytes are sent until you accept. Only accept files you expect from this sender.", style = MaterialTheme.typography.bodySmall)
             }
         },
-        confirmButton = { TextButton(onClick = onAccept) { Text("ACCEPT") } },
-        dismissButton = { TextButton(onClick = onReject) { Text("REJECT") } },
+        confirmButton = { TextButton(onClick = onAccept) { Text("Accept file") } },
+        dismissButton = { TextButton(onClick = onReject) { Text("Reject") } },
     )
 }
 
 @Composable
-fun IncomingTextDialog(info: IncomingText, onCopy: (String) -> Unit, onDismiss: () -> Unit) {
+fun IncomingTextDialog(
+    info: IncomingText,
+    onCopy: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onShare: ((String) -> Unit)? = null,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("TEXT RECEIVED") },
+        title = { ScreenHeading("Text received") },
         text = {
-            Column {
+            Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("From ${info.sender}")
-                Text("“${info.text.take(500)}”")
+                SelectionContainer { Text(info.text) }
             }
         },
-        confirmButton = { TextButton(onClick = { onCopy(info.text) }) { Text("COPY") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("CLOSE") } },
+        confirmButton = {
+            Column {
+                TextButton(onClick = { onCopy(info.text) }) { Text("Copy") }
+                if (onShare != null) TextButton(onClick = { onShare(info.text) }) { Text("Share") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }
 
